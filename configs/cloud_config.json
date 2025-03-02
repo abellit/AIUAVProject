@@ -1,0 +1,19 @@
+{
+  "airsim_ip": "localhost",
+  "camera_name": "0",
+  "waypoints": [
+    [7, 0, -3],
+    [7, 23, -3],
+    [0, 23, -3],
+    [0, 0, -3]
+  ],
+  "training": {
+    "batch_size": 64,
+    "learning_rate": 0.0003,
+    "max_episodes": 100
+  },
+  "paths": {
+    "model_weights": "drone_navigation/model_weights",
+    "training_data": "drone_navigation/training_data"
+  }
+}

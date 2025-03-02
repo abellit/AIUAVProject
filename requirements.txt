@@ -1,0 +1,9 @@
+numpy
+pandas
+msgpack-rpc-python
+gymnasium 
+opencv-python
+tensorflow
+stable-baselines3
+airsim
+
