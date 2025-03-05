@@ -10,10 +10,12 @@
   "training": {
     "batch_size": 64,
     "learning_rate": 0.0003,
-    "max_episodes": 100
+    "max_episodes": 100,
+    "timesteps_per_epoch": 10000,
+    "total_epochs": 100
   },
   "paths": {
-    "model_weights": "drone_navigation/model_weights",
-    "training_data": "drone_navigation/training_data"
+    "model_weights": "data/drone_model_weights",
+    "training_data": "data/drone_training_data"
   }
 }
