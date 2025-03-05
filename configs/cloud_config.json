@@ -1,5 +1,5 @@
 {
-  "airsim_ip": "",
+  "airsim_ip": "134.83.2.51:41451",
   "camera_name": "0",
   "waypoints": [
     [7, 0, -3],
