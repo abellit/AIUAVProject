@@ -1,5 +1,5 @@
 {
-  "airsim_ip": "localhost",
+  "airsim_ip": "",
   "camera_name": "0",
   "waypoints": [
     [7, 0, -3],
