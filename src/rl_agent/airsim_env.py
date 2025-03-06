@@ -189,6 +189,8 @@ class AirSimForestEnv(gym.Env):
         return observation, info
 
     def _get_observation(self):
+
+
         """
         Get RGB camera image and process it for the neural network.
         """
@@ -210,21 +212,47 @@ class AirSimForestEnv(gym.Env):
             # Resize to the dimensions expected by the CNN
             img_resized = cv2.resize(img_rgba, (self.image_width, self.image_height))
             
+            # Return in channel-first format (C, H, W) as expected by PyTorch
             img_channels_first = np.transpose(img_resized, (2, 0, 1))
-            # Normalize pixel values to [0, 1]
-            # img_normalized = img_resized.astype(np.float32) / 255.0
-
-            # img_normalised = np.transpose(img_normalized, (2, 0, 1))
-
-            # print(f"Observation shape: {img_channels_first.shape}, dtype: {img_channels_first.dtype}")
-            # print(f"Observation shape: {img_normalised.shape}, dtype: {img_normalised.dtype}")
             
             return img_channels_first.astype(np.uint8)
             
+            # """
+            # Get RGB camera image and process it for the neural network.
+            # """
+            # try:
+            #     # Request RGB image
+            #     responses = self.client.simGetImages([
+            #         airsim.ImageRequest(self.front_camera, airsim.ImageType.Scene, False, False)
+            #     ])
+                
+            #     if not responses:
+            #         raise Exception("No image returned from AirSim")
+                    
+            #     response = responses[0]
+                
+            #     # Convert to numpy array
+            #     img_rgba = np.frombuffer(response.image_data_uint8, dtype=np.uint8)
+            #     img_rgba = img_rgba.reshape(response.height, response.width, 3)  # RGB format
+                
+            #     # Resize to the dimensions expected by the CNN
+            #     img_resized = cv2.resize(img_rgba, (self.image_width, self.image_height))
+                
+            #     img_channels_first = np.transpose(img_resized, (2, 0, 1))
+                # Normalize pixel values to [0, 1]
+                # img_normalized = img_resized.astype(np.float32) / 255.0
+
+                # img_normalised = np.transpose(img_normalized, (2, 0, 1))
+
+                # print(f"Observation shape: {img_channels_first.shape}, dtype: {img_channels_first.dtype}")
+                # print(f"Observation shape: {img_normalised.shape}, dtype: {img_normalised.dtype}")
+                
+                #return img_channels_first.astype(np.uint8)
+                
         except Exception as e:
             print(f"Error getting observation: {e}")
             # Return a blank observation as fallback
-            return np.zeros((self.image_height, self.image_width, 3), dtype=np.float32)
+            return np.zeros((3, self.image_height, self.image_width), dtype=np.uint8)
 
     def _update_obstacle_distances(self):
         """

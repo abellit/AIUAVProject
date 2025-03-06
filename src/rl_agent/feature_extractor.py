@@ -48,16 +48,18 @@ class ForestNavCNN(BaseFeaturesExtractor):
             nn.ReLU()
         )
 
-    def build_tf_model(self, n_input_channels, features_dim):
-        self.tf_model = tf.keras.Sequential([
-            tf.keras.layers.Conv2D(32, kernel_size=8, strides=4, padding='same', activation='relu', input_shape=(64, 64, n_input_channels)),
-            tf.keras.layers.Conv2D(64, kernel_size=4, strides=2, padding='same', activation='relu'),
-            tf.keras.layers.Conv2D(64, kernel_size=3, strides=1, padding='same', activation='relu'),
-            tf.keras.layers.Flatten(),
-            tf.keras.layers.Dense(features_dim, activation='relu')
-        ])
+        print(f"ForestNavCNN initialised: input_shape={input_shape}, flatten_shape={n_flatten}, flattened_size={n_flatten}")   
 
-        self.tf_model.compile(optimizer='adam', loss='mse')
+    # def build_tf_model(self, n_input_channels, features_dim):
+    #     self.tf_model = tf.keras.Sequential([
+    #         tf.keras.layers.Conv2D(32, kernel_size=8, strides=4, padding='same', activation='relu', input_shape=(64, 64, n_input_channels)),
+    #         tf.keras.layers.Conv2D(64, kernel_size=4, strides=2, padding='same', activation='relu'),
+    #         tf.keras.layers.Conv2D(64, kernel_size=3, strides=1, padding='same', activation='relu'),
+    #         tf.keras.layers.Flatten(),
+    #         tf.keras.layers.Dense(features_dim, activation='relu')
+    #     ])
+
+    #     self.tf_model.compile(optimizer='adam', loss='mse')
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         
@@ -68,13 +70,13 @@ class ForestNavCNN(BaseFeaturesExtractor):
         # Process through CNN and linear layers
         return self.linear(self.cnn(observations))
 
-    def tf_process(self, observations_np):
-        if isinstance(observations_np, torch.Tensor):
-            observations_np = observations_np.permute(0, 2, 3, 1).cpu().numpy()
-        elif isinstance(observations_np, np.ndarray) and observations_np.shape[1] <= 3:
-            observations_np = observations_np.permute(0, 2, 3, 1)
+    # def tf_process(self, observations_np):
+    #     if isinstance(observations_np, torch.Tensor):
+    #         observations_np = observations_np.permute(0, 2, 3, 1).cpu().numpy()
+    #     elif isinstance(observations_np, np.ndarray) and observations_np.shape[1] <= 3:
+    #         observations_np = observations_np.permute(0, 2, 3, 1)
 
-        return self.tf_model(observations_np)
+    #     return self.tf_model(observations_np)
     
 
 
