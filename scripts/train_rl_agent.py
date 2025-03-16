@@ -10,15 +10,17 @@ import time
 import json
 from datetime import datetime
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
+from stable_baselines3.common.callbacks import BaseCallback
+import matplotlib.pyplot as plt
+from stable_baselines3.common.logger import Figure
 from src.utils.training_manager import TrainingManager
 from src.rl_agent.airsim_env import AirSimForestEnv
-from src.rl_agent.feature_extractor import ForestNavCNN  # Import ForestNavCNN
-from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage, VecMonitor
-from stable_baselines3.common.vec_env import VecEnv
+from src.rl_agent.feature_extractor import ForestNavMultiInputExtractor  # Import ForestNavCNN
+from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage, VecMonitor, VecEnv, SubprocVecEnv
 from typing import List, Optional, Tuple, Union
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
-from stable_baselines3.common.policies import ActorCriticCnnPolicy
+from stable_baselines3.common.policies import ActorCriticCnnPolicy, MultiInputActorCriticPolicy
+from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3 import PPO
 
 
@@ -86,6 +88,92 @@ class CustomVecTransposeImage(VecEnv):
         
     def env_is_wrapped(self, wrapper_class, indices=None):
         return self.venv.env_is_wrapped(wrapper_class, indices)
+    
+class MetricsCallBack(BaseCallback):
+    """
+    Callback for logging episode statistics.
+    """
+
+    def __init__(self, verbose=0):
+        super(MetricsCallBack, self).__init__(verbose)
+        self.episode_rewards = []
+        self.episode_lengths = []
+        self.training_losses = {'policy_loss': [], 'value_loss': [], 'entropy_loss': [], 'kl_div': []}
+        self.episode_num = 0
+        self.episode_reward = 0
+        self.last_timesteps = 0
+        self.last_episode_time = time.time()
+
+    def _on_step(self) -> bool:
+        
+        for info in self.locals['infos']:
+            if 'episode' in info.keys():
+                self.episode_rewards.append(info['episode']['r'])
+                self.episode_lengths.append(info['episode']['l'])
+                self.episode_num += 1
+                self.episode_reward = 0
+                self.last_timesteps = self.num_timesteps
+                self.last_episode_time = time.time()
+
+        if hasattr(self.model, 'loss_dict'):
+            self.training_losses['policy_loss'].append(self.model.loss_dict['policy_loss'])
+            self.training_losses['value_loss'].append(self.model.loss_dict['value_loss'])
+            self.training_losses['entropy_loss'].append(self.model.loss_dict['entropy_loss'])
+            self.training_losses['kl_div'].append(self.model.loss_dict['kl_div'])
+
+        return True
+    
+    def get_metrics(self):
+        """Track training metrics."""
+        metrics = {}
+
+        if self.episode_rewards:
+            metrics['mean_reward'] = np.mean(self.episode_rewards[-10:])
+            metrics['min_reward'] = np.min(self.episode_rewards[-10:])
+            metrics['max_reward'] = np.max(self.episode_rewards[-10:])
+            metrics['mean_episode_length'] = np.mean(self.episode_lengths[-10:])
+            metrics['total_episodes'] = self.episode_num
+
+            success_threshold = 0.75
+            recent_episodes = self.episode_rewards[-10:]
+            success_rate = sum([1 for r in recent_episodes if r > success_threshold]) / len(recent_episodes)
+            metrics['success_rate'] = success_rate
+
+        for key, values in self.training_losses.items():
+            if values:
+                metrics[key] = np.mean(values[-100:])
+        
+        return metrics
+
+    def plot_metrics(self, log_path):
+        """Plot training metrics."""
+        plt.figure(figsize=(16, 8))
+        plt.plot(self.episode_rewards, label='Episode Reward')
+        plt.title("Episode Rewards")
+        plt.xlabel("Episode")
+        plt.ylabel("Reward")
+        plt.grid()
+        plt.legend()
+        plt.show()
+        plt.savefig(f"{log_path}/reward_curve.png")
+        plt.close()
+        
+
+        plt.figure(figsize=(16, 8))
+        window_size = min(10, len(self.episode_rewards))
+        if window_size > 1:
+            smoothed_rewards = np.convolve(self.episode_rewards, np.ones(window_size) / window_size, mode='valid')
+            plt.plot(smoothed_rewards, label='Smoothed Episode Reward')
+            plt.title("Smoothed Episode Rewards")
+            plt.xlabel("Episode")
+            plt.ylabel("Reward")
+            plt.grid()
+            plt.legend()
+            plt.show()
+            plt.savefig(f"{log_path}/smoothed_reward_curve.png")
+            plt.close()
+
+
 
 def train_sar_drone():
     """
@@ -108,9 +196,31 @@ def train_sar_drone():
             return env
         return _init
     
-    # Create vectorized environment
+    # Create vectorized environmenst
     print("Setting up environment...")
-    env = DummyVecEnv([make_env()])
+
+    env_config = {
+        'max_steps': 2000,
+        'use_rgb': True,
+        'use_depth': True,
+        'use_lidar': True,
+        #'use_gps': True,
+        'use_imu': True,
+        #'use_barometer': True,
+        #'use_distance_sensor': True,
+        'randomize_start': True,
+        'lidar_points': 1024,
+        'lidar_range': 50.0,
+        'collision_penalty': -100.0,
+        'waypoint_reward': 50.0, 
+        'progress_reward': 0.1,
+        'energy_penalty': 0.01,
+        'obstacle_distance_factor': 0.5
+    }
+
+    # num_envs = 2
+    # env = SubprocVecEnv([make_env(i, config, client) for i in range(num_envs)])
+    env = DummyVecEnv([make_env(env_config)])
     
     # Add Monitor wrapper to log episode statistics
     env = VecMonitor(env, os.path.join("./logs", "sar_drone_monitor"))
@@ -122,7 +232,7 @@ def train_sar_drone():
     
     # Define policy kwargs with our custom feature extractor
     policy_kwargs = {
-        "features_extractor_class": ForestNavCNN,
+        "features_extractor_class": ForestNavMultiInputExtractor,
         "features_extractor_kwargs": {"features_dim": 256},
         "net_arch": [dict(pi=[128, 64], vf=[128, 64])]
     }
@@ -141,7 +251,8 @@ def train_sar_drone():
     )
     
     # Create evaluation environment
-    eval_env = DummyVecEnv([make_env()])
+    eval_env = DummyVecEnv([make_env(env_config)])
+    #eval_env = SubprocVecEnv([make_env(i, config, client) for i in range(num_envs)])
     #eval_env = VecTransposeImage(eval_env)
 
     eval_env = CustomVecTransposeImage(eval_env)
@@ -154,16 +265,18 @@ def train_sar_drone():
         deterministic=True,
         render=False
     )
+
+    metrics_callback = MetricsCallBack()
     
     # Parameters
     timesteps_per_epoch = config.get('training', {}).get('timesteps_per_epoch', 10000)
-    total_epochs = config.get('training', {}).get('total_epochs', 100)
-    learning_rate = config.get('training', {}).get('learning_rate', 3e-4)
+    total_epochs = config.get('training', {}).get('total_epochs', 50)
+    learning_rate = config.get('training', {}).get('learning_rate', 1e-4)
     
     # Initialize PPO model with custom parameters
     print("Creating PPO model with custom CNN...")
     model = PPO(
-        ActorCriticCnnPolicy,
+        MultiInputActorCriticPolicy,  # Custom policy with multiple inputs
         env,
         learning_rate=learning_rate,
         n_steps=1024,  # Longer trajectories for stable learning
@@ -176,6 +289,51 @@ def train_sar_drone():
         tensorboard_log=os.path.join(log_path, "tensorboard"),
         verbose=1
     )
+
+    def check_model_observation_space(model_path, env):
+        """
+        Check if a saved model's observation space matches the environment's Dict observation space.
+        """
+        try:
+            saved_model = PPO.load(model_path)
+            if saved_model.observation_space == env.observation_space:
+                print(f"✅ Model {model_path} is compatible with Dict observation space.")
+                return True
+            else:
+                print(f"❌ Model {model_path} has mismatched observation space:\n"
+                    f"   Saved: {saved_model.observation_space}\n"
+                    f"   Expected: {env.observation_space}")
+                return False
+        except Exception as e:
+            print(f"⚠️ Failed to load model {model_path}: {e}")
+            return False
+
+    def find_latest_best_model(env):
+        """
+        Finds the most recent and compatible best model that matches the multi-input Dict observation space.
+        """
+        base_dir = "./logs/sar_training/"
+        best_models = []
+
+        # Walk through all directories in the base directory
+        for root, dirs, files in os.walk(base_dir):
+            if "best_model" in dirs:
+                best_model_path = os.path.join(root, "best_model", "best_model.zip")
+                if os.path.exists(best_model_path):
+                    # Get last modified time
+                    dir_time = os.path.getmtime(os.path.join(root, "best_model"))
+                    best_models.append((best_model_path, dir_time))
+
+        # Sort models by creation time (latest first)
+        best_models.sort(key=lambda x: x[1], reverse=True)
+
+        # Return the first compatible model
+        for model_path, _ in best_models:
+            if check_model_observation_space(model_path, env):
+                return model_path
+
+        print("🚨 No compatible model found. Starting training from scratch.")
+        return None
     
     # Try to load previous checkpoint
     if manager.is_colab:
@@ -196,20 +354,33 @@ def train_sar_drone():
         # Local environment
         print("Checking for model checkpoints in local environment...")
         checkpoint_path = os.path.join(log_path, "checkpoints")
-        best_model_path = os.path.join(log_path, "best_model", "best_model.zip")
+        best_model_path = find_latest_best_model(env)
         
-        if os.path.exists(best_model_path):
+        if best_model_path and os.path.exists(best_model_path):
             print(f"Loading best model from {best_model_path}")
             model = PPO.load(best_model_path, env=env)
             start_epoch = 0  # We don't know which epoch it was from
         else:
             start_epoch = 0
             print("No previous best model found. Starting training from scratch.")
-    
     # Training loop
     print(f"Starting training for {total_epochs} epochs...")
     for epoch in range(start_epoch, total_epochs):
         print(f"Epoch {epoch+1}/{total_epochs}")
+
+
+        print("Attempting to reset AirSim client before epoch...")
+        if client:
+            try:
+                client.reset()  # This should reset the simulation state
+                client.confirmConnection()
+                client.enableApiControl(True)
+                client.armDisarm(True)
+                print("AirSim client reset successfully.")
+            except Exception as e:
+                print(f"Error resetting AirSim client: {e}")
+        else:
+            print("AirSim client is None, skipping reset.")
         
         # Train for one epoch
         model.learn(
@@ -218,23 +389,193 @@ def train_sar_drone():
             reset_num_timesteps=False
         )
         
+        # # Log training metrics
+        # metrics = metrics_callback.get_metrics()
+        # print(f"\nEpoch {epoch+1} Metrics:")
+        # print(f"{'='*30}")
+
+        # # Display metrics in a nice format
+        # if 'mean_reward' in metrics:
+        #     print(f"Mean Reward (Accuracy Proxy): {metrics['mean_reward']:.2f}")
+        # if 'mean_episode_length' in metrics:
+        #     print(f"Mean Episode Length: {metrics['mean_episode_length']:.2f}")
+        # if 'success_rate' in metrics:    
+        #     print(f"Success Rate: {metrics['success_rate']*100:.2f}%")
+        
+
+        # # Display training losses
+        # print(f"\nTraining Losses:")
+        # print(f"{'-'*30}")
+        # if 'policy_loss' in metrics:
+        #     print(f"Policy Loss: {metrics['policy_loss']:.6f}")
+        # if 'value_loss' in metrics:
+        #     print(f"Value Loss: {metrics['value_loss']:.6f}")
+        # if 'entropy_loss' in metrics:
+        #     print(f"Entropy Loss: {metrics['entropy_loss']:.6f}")   
+        # if 'kl_div' in metrics:
+        #     print(f"KL Divergence: {metrics['kl_div']:.6f}")
+
+        
+        # Plot \training metrics
+       # metrics_callback.plot_metrics(log_path)
+
+
         # Save model after each epoch
         epoch_save_path = os.path.join(log_path, f"model_epoch_{epoch+1}")
         model.save(epoch_save_path)
         print(f"Model saved to {epoch_save_path}")
+
+
+        # # Save detailed metrics to JSON
+        # with open(os.path.join(log_path, f"metrics_epoch_{epoch+1}.json"), "w") as f:
+        #     json.dump(metrics, f, indent=2)
         
         # Log training progress
-        with open(os.path.join(log_path, "training_log.txt"), "a") as f:
-            f.write(f"Completed epoch {epoch+1}/{total_epochs}\n")
-            f.write(f"Timestamp: {datetime.now()}\n")
-            f.write("---\n")
+        # with open(os.path.join(log_path, "training_log.txt"), "a") as f:
+        #     f.write(f"Completed epoch {epoch+1}/{total_epochs}\n")
+        #     f.write(f"Timestamp: {datetime.now()}\n")
+
+        #     for key, value in metrics.items():
+        #         f.write(f"{key}: {value}\n")
+
+        #     f.write("---\n")
+
+    print("\nPerforming final evaluation...")
+    mean_reward, std_reward = evaluate_policy(
+        model, 
+        eval_env, 
+        n_eval_episodes=10,
+        deterministic=True
+    )
+
+    print(f"\nFinal Model Performance:")
+    print(f"{'='*30}")
+    print(f"Mean Reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+    print(f"Success Rate: {metrics_callback.get_metrics().get('success_rate', 0)*100:.2f}%")
     
     print("Training completed!")
     env.close()
     eval_env.close()
 
+# def evaluate_sar_drone(model_path):
+#     """
+#     Evaluate a trained Search and Rescue drone model.
+#     """
+
+#     print(f"Evaluating model from {model_path}...")
+
+#     # Initialize training manager
+#     manager = TrainingManager()
+#     config = manager.config
+
+#     # Get AirSim client through the manager
+#     client = manager.setup_airsim_client() if manager.is_colab else None
+
+#     # Create evaluation environment
+
+#     env = DummyVecEnv([lambda: AirSimForestEnv(config=config, client=client)])
+#     #env = VecTransposeImage(env)
+#     env = CustomVecTransposeImage(env)
+
+#     # Load the model
+#     model = PPO.load(model_path, env=env)
+
+#     # Evaluate the model
+#     episode_rewards = []
+#     episode_successes = []
+#     n_eval_episodes = 10
+
+#     obs, _ = env.reset(), None
+
+#     for i in range(n_eval_episodes):
+#         print(f"Evaluating episode {i+1}/{n_eval_episodes}...")
+#         episode_reward = 0
+#         done = False
+
+#         while not done:
+#             action, _ = model.predict(obs, deterministic=True)
+#             obs, reward, done, info = env.step(action)
+#             episode_reward += reward[0]
+        
+#         episode_rewards.append(episode_reward)
+#         episode_success = episode_reward > 0.75
+#         episode_successes.append(episode_success)
+
+#         print(f"Episode {i+1} reward: {episode_reward}, Success: {episode_success}")  
+
+#         obs, _ = env.reset(), None
+
+#     mean_reward = np.mean(episode_rewards)  
+#     std_reward = np.std(episode_rewards)
+#     success_rate = np.mean(episode_successes)
+
+#     print(f"\nEvaluation Results:")
+#     print(f"{'='*30}")
+#     print(f"Mean Reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+#     print(f"Success Rate: {success_rate*100:.2f}%")
+#     print(f"Total Individual Episode Rewards: {episode_rewards}")
+#     print("Evaluation complete.")
+
+#     env.close()
+
+#     return mean_reward, success_rate
+
+
 if __name__ == "__main__":
     train_sar_drone()
+    # import argparse
+
+    # parser = argparse.ArgumentParser(description="Train or evaluate SAR drone model.")
+    # parser.add_argument('--mode', type=str, default='train', choices=['train', 'eval'], help="Whether to train or evaluate the model.")
+    # parser.add_argument('--model_path', type=str, help="Path to model for evaluation.")
+    # args = parser.parse_args()
+    
+
+    # if args.mode == 'train':
+    #     train_sar_drone()
+    # elif args.mode == 'eval' and args.model_path:
+    #     evaluate_sar_drone(args.model_path)
+    # else:
+    #     print("Please provide a valid mode and model path for evaluation")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
