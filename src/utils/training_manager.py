@@ -121,7 +121,7 @@ class TrainingManager:
         try:
             # Attempt to load config from file
             if self.is_colab:
-                config_path = '/content/configs/cloud_config.json'
+                config_path = './configs/cloud_config.json'
             else:
                 # Try to find config in the current directory structure
                 possible_paths = [
