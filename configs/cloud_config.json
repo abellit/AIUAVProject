@@ -1,19 +1,18 @@
 {
-  "airsim_ip": "134.83.2.51:41451",
-  "camera_name": "0",
+  "airsim_ip": "127.0.0.1:41451",
+  "training": {
+    "batch_size": 256,
+    "learning_rate": 0.0003,
+    "max_episodes": 75,
+    "timesteps_per_epoch": 10000,
+    "total_epochs": 50
+  },
   "waypoints": [
     [7, 0, -3],
-    [7, 23, -3],
-    [0, 23, -3],
+    [7, 70, -3],
+    [0, 70, -3],
     [0, 0, -3]
   ],
-  "training": {
-    "batch_size": 64,
-    "learning_rate": 0.0003,
-    "max_episodes": 100,
-    "timesteps_per_epoch": 10000,
-    "total_epochs": 100
-  },
   "paths": {
     "model_weights": "data/drone_model_weights",
     "training_data": "data/drone_training_data"

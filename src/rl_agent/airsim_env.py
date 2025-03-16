@@ -574,16 +574,13 @@
 #                 self.obstacle_distance_thresholds['safe'] = 3.0
 
 
-import os
 import time
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import airsim
 import cv2
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.evaluation import evaluate_policy
+
 
 
 class AirSimForestEnv(gym.Env):
