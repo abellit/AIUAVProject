@@ -190,7 +190,7 @@ def train_sar_drone():
     client = manager.setup_airsim_client() if manager.is_colab else None
     
     # Create training environment
-    def make_env(rank=0):
+    def make_env(rank=0, config=None, client=None):
         def _init():
             env = AirSimForestEnv(config=config, client=client)
             return env
@@ -218,9 +218,9 @@ def train_sar_drone():
         'obstacle_distance_factor': 0.5
     }
 
-    # num_envs = 2
-    # env = SubprocVecEnv([make_env(i, config, client) for i in range(num_envs)])
-    env = DummyVecEnv([make_env(env_config)])
+    num_envs = 7
+    env = SubprocVecEnv([make_env(i, env_config, client) for i in range(num_envs)])
+   # env = DummyVecEnv([make_env(env_config)])
     
     # Add Monitor wrapper to log episode statistics
     env = VecMonitor(env, os.path.join("./logs", "sar_drone_monitor"))
@@ -251,8 +251,8 @@ def train_sar_drone():
     )
     
     # Create evaluation environment
-    eval_env = DummyVecEnv([make_env(env_config)])
-    #eval_env = SubprocVecEnv([make_env(i, config, client) for i in range(num_envs)])
+    #eval_env = DummyVecEnv([make_env(env_config)])
+    eval_env = SubprocVecEnv([make_env(i, env_config, client) for i in range(num_envs)])
     #eval_env = VecTransposeImage(eval_env)
 
     eval_env = CustomVecTransposeImage(eval_env)

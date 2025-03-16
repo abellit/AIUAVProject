@@ -772,10 +772,10 @@ class AirSimForestEnv(gym.Env):
         try:
             # Move drone based on action
             self.client.moveByRollPitchYawZAsync(
-                float(roll) * 0.3,    # Scale down for stability
-                float(pitch) * 0.3,   # Scale down for stability
-                float(yaw_rate) * 0.3,  
-                -3 + float(throttle),  # Base altitude of -3m with throttle adjustment
+                float(roll) * 0.4,    # Scale down for stability
+                float(pitch) * 0.4,   # Scale down for stability
+                float(yaw_rate) * 0.4,  
+                -3 + float(throttle) * 1.7,  # Base altitude of -3m with throttle adjustment
                 0.1  # Duration - keep short for responsive control
             ).join()
             
