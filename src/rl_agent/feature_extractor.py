@@ -166,7 +166,7 @@ class ForestNavMultiInputExtractor(BaseFeaturesExtractor):
     Each input type has its own processing network, and outputs are concatenated.
     """
     
-    def __init__(self, observation_space: spaces.Dict, features_dim: int = 512):
+    def __init__(self, observation_space: spaces.Dict, features_dim: int = 256):
         # Initialize parent with the combined features dimension
         super(ForestNavMultiInputExtractor, self).__init__(observation_space, features_dim)
         
@@ -233,13 +233,13 @@ class ForestNavMultiInputExtractor(BaseFeaturesExtractor):
         #         barometer_dim
         #     )
             
-        # if self.has_distance:
-        #     distance_dim = 24
-        #     self.feature_dims['distance'] = distance_dim
-        #     self.extractors['distance'] = self._build_vector_extractor(
-        #         self.observation_spaces['distance'], 
-        #         distance_dim
-        #     )
+        if self.has_distance:
+            distance_dim = 24
+            self.feature_dims['distance'] = distance_dim
+            self.extractors['distance'] = self._build_vector_extractor(
+                self.observation_spaces['distance'], 
+                distance_dim
+            )
         
         # Calculate total features dimension from all extractors
         total_concat_size = sum(self.feature_dims.values())
@@ -262,11 +262,17 @@ class ForestNavMultiInputExtractor(BaseFeaturesExtractor):
         n_input_channels = observation_space.shape[0]
         
         cnn = nn.Sequential(
-            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4, padding=0),
+            nn.Conv2d(n_input_channels, 16, kernel_size=8, stride=4, padding=0),
+            nn.BatchNorm2d(16),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+            nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=0),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=0),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.Flatten(),
         )
@@ -278,6 +284,9 @@ class ForestNavMultiInputExtractor(BaseFeaturesExtractor):
         
         linear = nn.Sequential(
             nn.Linear(n_flatten, features_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(features_dim, features_dim),
             nn.ReLU()
         )
         
@@ -291,15 +300,26 @@ class ForestNavMultiInputExtractor(BaseFeaturesExtractor):
         n_points = observation_space.shape[0]
         n_features_per_point = observation_space.shape[1]  # Typically 3 for x,y,z
         input_dim = n_points * n_features_per_point
+
+        max_points = 1024
+        if n_points > max_points:
+            self.downsample_lidar = True
+            input_dim = max_points * n_features_per_point
+        else:
+            self.downsample_lidar = False
         
         # Use 1D convolutions to process points as a sequence
         return nn.Sequential(
             nn.Flatten(),
-            nn.Linear(input_dim, 512),
+            nn.Linear(input_dim, 256),
+            nn.LayerNorm(256),
             nn.ReLU(),
-            nn.Linear(512, 256),
+            nn.Dropout(0.2),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Linear(256, features_dim),
+            nn.Dropout(0.2),
+            nn.Linear(128, features_dim),
             nn.ReLU()
         )
     
@@ -312,10 +332,32 @@ class ForestNavMultiInputExtractor(BaseFeaturesExtractor):
         return nn.Sequential(
             nn.Flatten(),
             nn.Linear(input_dim, features_dim * 2),
+            nn.LayerNorm(features_dim * 2),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(features_dim * 2, features_dim),
+            nn.LayerNorm(features_dim),
             nn.ReLU()
         )
+    
+    def _maybe_downsample_lidar(self, lider_data):
+        """
+        Downsample LiDAR data point cloud if needed
+        """
+
+        if not hasattr(self, 'downsample_lidar') or not self.downsample_lidar:
+            return lider_data
+        
+        batch_size = lider_data.shape[0]
+        n_points = lider_data.shape[1]
+        n_features = lider_data.shape[2]
+        max_points = 1024
+
+        if n_points <= max_points:
+            return lider_data
+        
+        indices = torch.linspace(0, n_points - 1, max_points).long()
+        return lider_data[:, indices, :]
     
     def forward(self, observations):
         """
@@ -323,48 +365,77 @@ class ForestNavMultiInputExtractor(BaseFeaturesExtractor):
         """
         encoded_tensor_list = []
         
-        # Process each observation type with its corresponding network
-        if self.has_rgb:
-            rgb_observations = observations['rgb']
-            # Convert uint8 [0-255] to float32 [0-1] if needed
-            if rgb_observations.dtype == torch.uint8:
-                rgb_observations = rgb_observations.float() / 255.0
-            encoded_rgb = self.extractors['rgb'](rgb_observations)
-            encoded_tensor_list.append(encoded_rgb)
-        
-        if self.has_depth:
-            depth_observations = observations['depth']
-            # Convert uint8 [0-255] to float32 [0-1] if needed
-            if depth_observations.dtype == torch.uint8:
-                depth_observations = depth_observations.float() / 255.0
-            encoded_depth = self.extractors['depth'](depth_observations)
-            encoded_tensor_list.append(encoded_depth)
-        
-        if self.has_lidar:
-            encoded_lidar = self.extractors['lidar'](observations['lidar'])
-            encoded_tensor_list.append(encoded_lidar)
-        
-        # if self.has_gps:
-        #     encoded_gps = self.extractors['gps'](observations['gps'])
-        #     encoded_tensor_list.append(encoded_gps)
-        
-        if self.has_imu:
-            encoded_imu = self.extractors['imu'](observations['imu'])
-            encoded_tensor_list.append(encoded_imu)
-        
-        # if self.has_barometer:
-        #     encoded_barometer = self.extractors['barometer'](observations['barometer'])
-        #     encoded_tensor_list.append(encoded_barometer)
-        
-        # if self.has_distance:
-        #     encoded_distance = self.extractors['distance'](observations['distance'])
-        #     encoded_tensor_list.append(encoded_distance)
-        
-        # Concatenate all encoded tensors
-        combined_features = torch.cat(encoded_tensor_list, dim=1)
-        
-        # Final combination layer
-        return self.combination_layer(combined_features)
+        try:
+            # Process each observation type with its corresponding network
+            if self.has_rgb and 'rgb' in observations:
+                rgb_observations = observations['rgb']
+                
+                # Ensure RGB data is valid before processing
+                if rgb_observations.numel() > 0:
+                    # Convert uint8 [0-255] to float32 [0-1] if needed
+                    if rgb_observations.dtype == torch.uint8:
+                        rgb_observations = rgb_observations.float() / 255.0
+                    encoded_rgb = self.extractors['rgb'](rgb_observations)
+                    encoded_tensor_list.append(encoded_rgb)
+                else:
+                    # Handle empty RGB tensor by creating a zero tensor of expected shape
+                    batch_size = next(iter(observations.values())).shape[0]
+                    encoded_rgb = torch.zeros((batch_size, self.feature_dims['rgb']), 
+                                            device=next(iter(observations.values())).device)
+                    encoded_tensor_list.append(encoded_rgb)
+            
+            if self.has_depth and 'depth' in observations:
+                depth_observations = observations['depth']
+                
+                # Ensure depth data is valid
+                if depth_observations.numel() > 0:
+                    # Convert uint8 [0-255] to float32 [0-1] if needed
+                    if depth_observations.dtype == torch.uint8:
+                        depth_observations = depth_observations.float() / 255.0
+                    encoded_depth = self.extractors['depth'](depth_observations)
+                    encoded_tensor_list.append(encoded_depth)
+                else:
+                    # Handle empty depth tensor
+                    batch_size = next(iter(observations.values())).shape[0]
+                    encoded_depth = torch.zeros((batch_size, self.feature_dims['depth']), 
+                                              device=next(iter(observations.values())).device)
+                    encoded_tensor_list.append(encoded_depth)
+            
+            if self.has_lidar and 'lidar' in observations:
+                lidar_data = observations['lidar']
+                # Downsample LiDAR data if configured
+                lidar_data = self._maybe_downsample_lidar(lidar_data)
+                encoded_lidar = self.extractors['lidar'](lidar_data)
+                encoded_tensor_list.append(encoded_lidar)
+            
+            if self.has_imu and 'imu' in observations:
+                encoded_imu = self.extractors['imu'](observations['imu'])
+                encoded_tensor_list.append(encoded_imu)
+            
+            if self.has_distance and 'distance' in observations:
+                encoded_distance = self.extractors['distance'](observations['distance'])
+                encoded_tensor_list.append(encoded_distance)
+            
+            # Concatenate all encoded tensors
+            combined_features = torch.cat(encoded_tensor_list, dim=1)
+            
+            # Final combination layer
+            return self.combination_layer(combined_features)
+            
+        except Exception as e:
+            print(f"Error in feature extractor forward pass: {e}")
+            # Return emergency fallback output
+            batch_size = 1
+            for obs in observations.values():
+                if obs is not None and hasattr(obs, 'shape') and len(obs.shape) > 0:
+                    batch_size = obs.shape[0]
+                    break
+            
+            # Create zero tensor of expected output shape
+            device = next(self.parameters()).device
+            return torch.zeros((batch_size, self.features_dim), device=device)
+
+
 
 # Original CNN extractor updated to handle different image types
 class ForestNavCNN(BaseFeaturesExtractor):

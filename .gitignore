@@ -128,3 +128,7 @@ settings.json
 
 # AirSim folder
 AirSim/
+
+# Drone training
+experiments/
+data/

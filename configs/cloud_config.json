@@ -1,7 +1,7 @@
 {
   "airsim_ip": "127.0.0.1:41451",
   "training": {
-    "batch_size": 256,
+    "batch_size": 512,
     "learning_rate": 0.0003,
     "max_episodes": 75,
     "timesteps_per_epoch": 10000,

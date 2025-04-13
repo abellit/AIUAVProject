@@ -1,20 +1,45 @@
 {
   "airsim_ip": "127.0.0.1",
   "training": {
-    "batch_size": 128,
-    "learning_rate": 3e-4,
-    "max_episodes": 50,
-    "timesteps_per_epoch": 7000,
-    "total_epochs": 25
+    "batch_size": 16,
+    "learning_rate": 3e-5,
+    "max_episodes": 40,
+    "timesteps_per_epoch": 1024,
+    "total_epochs": 20,
+    "buffer_size": 1000000
   },
   "waypoints": [
-    [0, 0, -3],
-    [50, 0, -3],
-    [50, 300, -3],
+    [15, 0, -3],
+    [15, 15, -3],
+    [0, 15, -3],
     [0, 0, -3]
+    
   ],
   "paths": {
     "model_weights": "data/drone_model_weights",
     "training_data": "data/drone_training_data"
-  }
+  },
+  "max_steps": 2048,
+  "front_center": "0",
+  "depth_camera": "1",
+  "use_lidar": true,
+  "lidar_points": 1024,
+  "lidar_range": 50.0,
+  "use_rgb": true,
+  "use_depth": true,
+  "use_gps": true,
+  "use_imu": true,
+  "use_barometer": true,
+  "use_distance_sensor": true,
+  "collision_penalty": -100.0,
+  "waypoint_reward": 50.0,
+  "progress_reward": 5.0,
+  "energy_penalty": 0.75,
+  "obstacle_distance_factor": 0.5,
+  "obstacle_avoidance_reward": 50.0,
+  "target_threshold": 3.0,
+  "randomize_start": true,
+  "initial_position": [0, 0, -3],
+  "use_path_planning": false,
+  "terminate_on_collision": true
 }

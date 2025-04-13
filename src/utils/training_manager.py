@@ -47,13 +47,19 @@ class TrainingManager:
     def get_experiment_path(self):
         """Get the base path for the current experiment"""
         if self.is_colab:
-            # In Colab, we'll use a drive path if available
-            try:
-                from google.colab import drive
-                drive.mount('/content/drive')
+            # First check if drive is already mounted
+            if os.path.exists('/content/drive/MyDrive'):
                 base_path = f"/content/drive/MyDrive/airsim_experiments/{self.experiment_id}"
-            except ImportError:
-                base_path = f"/content/airsim_experiments/{self.experiment_id}"
+            else:
+                # Try to mount drive, but with proper error handling
+                try:
+                    from google.colab import drive
+                    drive.mount('/content/drive')
+                    base_path = f"/content/drive/MyDrive/airsim_experiments/{self.experiment_id}"
+                except (ImportError, AttributeError, Exception) as e:
+                    print(f"Warning: Could not mount Google Drive: {e}")
+                    print("Using local storage instead")
+                    base_path = f"/content/airsim_experiments/{self.experiment_id}"
         else:
             # Local environment
             base_path = os.path.join(self.config.get('paths', {}).get('experiments', './experiments'), self.experiment_id)
@@ -106,7 +112,7 @@ class TrainingManager:
                 'gamma': 0.99
             },
             'environment': {
-                'max_steps': 1000,
+                'max_steps': 2048,
                 'collision_penalty': -100.0,
                 'waypoint_reward': 200.0,
                 'progress_reward': 1.0,
@@ -114,7 +120,7 @@ class TrainingManager:
                 'randomize_start': True
             },
             'features': {
-                'feature_dim': 256
+                'feature_dim': 512
             }
         }
         

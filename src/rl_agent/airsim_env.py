@@ -573,13 +573,24 @@
 #                 self.target_reached_threshold = 1.5
 #                 self.obstacle_distance_thresholds['safe'] = 3.0
 
-
+from datetime import datetime
+import os
 import time
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import airsim
 import cv2
+
+
+try:
+    import airsim
+    AIRSIM_AVAILABLE = True
+except ImportError:
+    AIRSIM_AVAILABLE = False
+    print("AirSim package not available, using simulated version")
+
+
 
 
 
@@ -590,28 +601,45 @@ class AirSimForestEnv(gym.Env):
     """
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
-    def __init__(self, ip_address='', config=None, client=None):
+    def __init__(self, ip_address='', config=None, client=None, use_simulation=None):
         super().__init__()
         self.config = config or {}
-
-        # Connect to AirSim
-        if client:
-            self.client = client
+        
+        # Determine whether to use simulation based on availability and explicit setting
+        if use_simulation is None:
+            # Auto-detect based on AirSim availability
+            self.use_simulation = not AIRSIM_AVAILABLE
         else:
-            ip_address = self.config.get('airsim_ip', '')
-            self.client = airsim.MultirotorClient(ip=ip_address) if ip_address else airsim.MultirotorClient()
+            self.use_simulation = use_simulation
+            
+        # Connect to AirSim or initialize simulator
+        if self.use_simulation:
+            # Initialize the simulated client
+            from .airsim_sim_env import AirSimColabSimulator
+            self.client = AirSimColabSimulator(config=self.config)
+            print("Using simulated AirSim environment")
+        else:
+            # Connect to real AirSim
+            if client:
+                self.client = client
+            else:
+                ip_address = self.config.get('airsim_ip', '')
+                self.client = airsim.MultirotorClient(ip=ip_address) if ip_address else airsim.MultirotorClient()
 
-        self.client.confirmConnection()
-        self.client.enableApiControl(True)
-        self.client.armDisarm(True)
+            self.client.confirmConnection()
+            self.client.enableApiControl(True)
+            self.client.armDisarm(True)
+            print("Connected to real AirSim environment")
         
         # Simulation parameters
-        self.max_steps = self.config.get('max_steps', 1000)
+        self.max_steps = self.config.get('max_steps', 2048)
         self.current_step = 0
         
         # Image and sensor capture setup
-        self.front_camera = self.config.get('front_camera', "0")
-        self.depth_camera = self.config.get('depth_camera', "0")
+        self.front_camera = self.config.get('front_center', "0")
+        self.depth_camera = self.config.get('front_center', "1")
+
+        
         
         # Configure LiDAR sensor
         self.use_lidar = self.config.get('use_lidar', True)
@@ -660,6 +688,11 @@ class AirSimForestEnv(gym.Env):
             )
             self.observation_components['depth'] = depth_space
             sensor_space_list.append(depth_space)
+        
+        self.base_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), '..', '..' 'data')
+        # self.image_dir = os.path.join(self.base_dir, 'images')
+        # self.depth_dir = os.path.join(self.base_dir, 'depth')
         
         # LiDAR sensor
         if self.use_lidar:
@@ -727,11 +760,12 @@ class AirSimForestEnv(gym.Env):
 
         # Target waypoints for navigation
         self.waypoints = self.config.get('waypoints', [
-            (7, 0, -3),    # Starting area
-            (7, 23, -3),   # Through first section of forest
-            (14, 35, -3),  # Deeper into forest
-            (0, 40, -3),   # Potential search area
-            (0, 0, -3)     # Return to start
+            [25, 0, -3],
+            [50, 0, -3],
+            [100, 0, -3],
+            [50, 0, -3],    
+            [25, 0, -3],    
+            [0, 0, 0]       # Return to start
         ])
         self.current_waypoint_index = 0
         self.target_reached_threshold = self.config.get('target_threshold', 3.0)  # meters
@@ -739,16 +773,21 @@ class AirSimForestEnv(gym.Env):
         # Rewards configuration
         self.collision_penalty = self.config.get('collision_penalty', -100.0)
         self.waypoint_reward = self.config.get('waypoint_reward', 50.0)
-        self.progress_reward_factor = self.config.get('progress_reward', 0.1)
-        self.energy_penalty_factor = self.config.get('energy_penalty', 0.01)
+        self.progress_reward_factor = self.config.get('progress_reward', 5.0)
+        self.energy_penalty_factor = self.config.get('energy_penalty', 0.75)
         self.obstacle_distance_factor = self.config.get('obstacle_distance_factor', 0.5)
+        self.obstacle_avoidance_reward = self.config.get('obstacle_avoidance_reward', 50.0)
         
         # Tracking metrics
         self.collisions = 0
         self.waypoints_reached = 0
         self.min_distance_to_obstacles = float('inf')
         self.total_reward = 0.0
-        
+        self.obstacle_encounters = 0
+        self.obstacle_avoidances = 0
+        self.in_obstacle_proximity = False
+        self.obstacle_proximity_distance = 2.0
+            
         # For simulation stability
         self.last_position = np.zeros(3)
         self.last_orientation = np.zeros(4)  # Quaternion
@@ -769,11 +808,11 @@ class AirSimForestEnv(gym.Env):
         try:
             # Move drone based on action
             self.client.moveByRollPitchYawZAsync(
-                float(roll) * 0.4,    # Scale down for stability
-                float(pitch) * 0.4,   # Scale down for stability
-                float(yaw_rate) * 0.4,  
-                -3 + float(throttle) * 1.7,  # Base altitude of -3m with throttle adjustment
-                0.1  # Duration - keep short for responsive control
+                float(roll) * 1.0,    # Scale down for stability
+                float(pitch) * 1.0,   # Scale down for stability
+                float(yaw_rate) * 1.0,  
+                -3 + float(throttle) * 3.0,  # Base altitude of -3m with throttle adjustment
+                0.05  # Duration - keep short for responsive control
             ).join()
             
             # Allow small time for physics to stabilize
@@ -798,6 +837,9 @@ class AirSimForestEnv(gym.Env):
         # Check termination conditions
         terminated = self._is_terminated()
         truncated = self._is_truncated()
+
+        # Calculate success metrics
+        success_metrics = self.calculate_success_metrics()
         
         # Prepare info dict with useful metrics
         info = {
@@ -810,7 +852,10 @@ class AirSimForestEnv(gym.Env):
             'steps': self.current_step,
             'reward_breakdown': reward_info,
             'current_position': current_position.tolist(),
-            'current_waypoint': self.waypoints[min(self.current_waypoint_index, len(self.waypoints)-1)]
+            'current_waypoint': self.waypoints[min(self.current_waypoint_index, len(self.waypoints)-1)],
+            'obstacles_encountered': self.obstacle_encounters,
+            'obstacles_avoided': self.obstacle_avoidances,
+            'success_metrics': success_metrics
         }
 
         return observation, reward, terminated, truncated, info
@@ -823,9 +868,17 @@ class AirSimForestEnv(gym.Env):
         
         # Reset simulation
         self.client.reset()
+
         self.client.confirmConnection()
         self.client.enableApiControl(True)
         self.client.armDisarm(True)
+
+        # Initialize camera position
+        # self.client.simSetCameraPose("front_center", 
+        #                                 airsim.Vector3r(0.30, 0.0, -0.1),
+        #                                 airsim.to_quaternion(0.0, 0.0, 0.0))
+        
+        
         
         # Reset internal state
         self.current_step = 0
@@ -836,6 +889,11 @@ class AirSimForestEnv(gym.Env):
         self.total_reward = 0.0
         self.path_history = []
         self.planned_path = []
+
+        # Reset obstacle avoidance tracking
+        self.obstacle_encounters = 0
+        self.obstacle_avoidances = 0
+        self.in_obstacle_proximity = False
         
         # Set initial pose - slight randomization for robustness
         initial_position = self.config.get('initial_position', [0, 0, -3])
@@ -849,7 +907,7 @@ class AirSimForestEnv(gym.Env):
         self.client.simSetVehiclePose(initial_pose, True)
         
         # Wait for physics to stabilize
-        time.sleep(0.2)
+        time.sleep(0.05)
         
         # Get initial observation from all sensors
         observation = self._get_observation()
@@ -927,52 +985,109 @@ class AirSimForestEnv(gym.Env):
             else:
                 return np.zeros(self.observation_space.shape, dtype=self.observation_space.dtype)
 
+    def _save_image(self, image, filename):
+        """
+        Save image to the data folder.
+
+        """
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        data_folder = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
+        os.makedirs(data_folder, exist_ok=True)
+        filepath = os.path.join(data_folder, f"{timestamp}_{filename}")
+        cv2.imwrite(filepath, image)
+
+    import os
+
     def _get_rgb_observation(self):
         """
         Get RGB camera image and process it for the neural network.
         """
         try:
-            # Request RGB image
-            responses = self.client.simGetImages([
-                airsim.ImageRequest(self.front_camera, airsim.ImageType.Scene, False, False)
+            # Request RGB image from front_center camera explicitly
+            responses = self.client.simGetImages([ 
+                airsim.ImageRequest("front_center", airsim.ImageType.Scene, False, False)
             ])
             
-            if not responses:
-                raise Exception("No RGB image returned from AirSim")
-                
+            # Check if we received a valid response
+            if not responses or len(responses) == 0:
+                print("Warning: No image responses received from AirSim")
+                return np.zeros((3, 64, 64), dtype=np.uint8)  # Channels, Height, Width
+            
             response = responses[0]
             
+            # Check if the response contains valid image data
+            if not response.image_data_uint8 or len(response.image_data_uint8) == 0:
+                print("Warning: Empty image data in response")
+                return np.zeros((3, 64, 64), dtype=np.uint8)  # Channels, Height, Width
+            
+            
             # Convert to numpy array
-            img_rgba = np.frombuffer(response.image_data_uint8, dtype=np.uint8)
-            img_rgba = img_rgba.reshape(response.height, response.width, 3)  # RGB format
+            img_1d = np.frombuffer(response.image_data_uint8, dtype=np.uint8)  # Changed to frombuffer
+
+            #print(f"RGB image shape: {img_1d.shape}")
             
-            # Resize to the dimensions expected by the CNN
-            img_resized = cv2.resize(img_rgba, (self.image_width, self.image_height))
+            # Verify that the image data is not empty
+            if len(img_1d) == 0:
+                print("Warning: Empty image array after conversion")
+                return np.zeros((3, 64, 64), dtype=np.uint8)  # Channels, Height, Width
             
-            # Return in channel-first format (C, H, W) as expected by PyTorch
-            img_channels_first = np.transpose(img_resized, (2, 0, 1))
+            # Check expected size based on response metadata
+            expected_size = response.width * response.height * 3
+            if len(img_1d) != expected_size:
+                print(f"Warning: Image data size mismatch. Expected {expected_size}, got {len(img_1d)}")
+                # Try to reconstruct based on what we have
+                if len(img_1d) > 0:
+                    # Reshape to whatever dimensions we can
+                    img_rgb = img_1d[:-(len(img_1d) % 3)].reshape(-1, 3)
+                    if img_rgb.shape[0] > 0:
+                        # Create a square image from available data
+                        side_length = int(np.sqrt(img_rgb.shape[0]))
+                        img_rgb = img_rgb[:side_length*side_length].reshape(side_length, side_length, 3)
+                        img_rgb_resized = cv2.resize(img_rgb, (64, 64))  # Resize to 64x64
+                        self._save_image(img_rgb_resized, "rgb_image.png")
+                        return img_rgb_resized.transpose(2, 0, 1)  # Convert to (Channels, Height, Width)
+                return np.zeros((3, 64, 64), dtype=np.uint8)  # Channels, Height, Width
             
-            return img_channels_first.astype(np.uint8)
-                
+            # Reshape to 3D array
+            img_rgb = img_1d.reshape(response.height, response.width, 3)
+            
+            # Resize for the CNN with explicit dimension checks
+            if img_rgb.shape[0] > 0 and img_rgb.shape[1] > 0:
+                img_rgb_resized = cv2.resize(img_rgb, (64, 64))  # Resize to 64x64
+                self._save_image(img_rgb_resized, "rgb_image.png")
+                return img_rgb_resized.transpose(2, 0, 1)  # Convert to (Channels, Height, Width)
+            else:
+                print(f"Warning: Invalid image dimensions: {img_rgb.shape}")
+                return np.zeros((3, 64, 64), dtype=np.uint8)  # Channels, Height, Width
+            
         except Exception as e:
-            print(f"Error getting RGB observation: {e}")
-            # Return a blank observation as fallback
-            return np.zeros((3, self.image_height, self.image_width), dtype=np.uint8)
+            print(f"Error in _get_rgb_observation: {str(e)}")
+            # Return a black image as fallback
+            return np.zeros((3, 64, 64), dtype=np.uint8)  # Channels, Height, Width
+
 
     def _get_depth_observation(self):
         """
         Get depth camera image and process it.
         """
         try:
-            # Request depth image
+            # Request depth image from depth_camera explicitly
             responses = self.client.simGetImages([
-                airsim.ImageRequest(self.depth_camera, airsim.ImageType.DepthPerspective, True, False)
+                airsim.ImageRequest("front_center", airsim.ImageType.DepthVis, True, False)
             ])
             
-            if not responses:
-                raise Exception("No depth image returned from AirSim")
-                
+            # Check if we received a valid response
+            if not responses or len(responses) == 0:
+                print("Warning: No depth image responses received from AirSim")
+                return np.zeros((1, 64, 64), dtype=np.uint8)  # Channels, Height, Width
+            
             response = responses[0]
+            
+            # Check if the response contains valid image data
+            if not response.image_data_float or len(response.image_data_float) == 0:
+                print("Warning: Empty depth image data in response")
+                return np.zeros((1, 64, 64), dtype=np.uint8)  # Channels, Height, Width
             
             # Convert to depth map
             depth_img = airsim.list_to_2d_float_array(
@@ -981,16 +1096,26 @@ class AirSimForestEnv(gym.Env):
                 response.height
             )
             
+            # Debugging: Print the shape of the depth image
+            #print(f"Depth image shape: {depth_img.shape}")
+            
             # Normalize and convert to uint8 for network input
             depth_img = np.array(depth_img)
             depth_img = np.clip(depth_img, 0, 100.0)  # Clip far distances 
             depth_img = (depth_img * 255.0 / 100.0).astype(np.uint8)  # Scale to 0-255
+            
+            # Debugging: Check if the depth image is empty
+            if depth_img.size == 0:
+                print("Warning: Depth image is empty after conversion")
+                return np.zeros((1, 64, 64), dtype=np.uint8)  # Channels, Height, Width
             
             # Resize to the dimensions expected by the CNN
             depth_resized = cv2.resize(depth_img, (self.image_width, self.image_height))
             
             # Add channel dimension and return in channel-first format
             depth_channels_first = depth_resized.reshape(1, self.image_height, self.image_width)
+            
+            self._save_image(depth_resized, "depth_image.png")
             
             return depth_channels_first.astype(np.uint8)
                 
@@ -1160,16 +1285,14 @@ class AirSimForestEnv(gym.Env):
         try:
             # Simulate distance sensors in six directions using ray casting
             directions = [
-                (1, 0, 0),   # Forward
-                (-1, 0, 0),  # Backward
-                (0, 1, 0),   # Right
-                (0, -1, 0),  # Left
-                (0, 0, 1),   # Up
-                (0, 0, -1)   # Down
+                [7, 0, -3],
+                [7, 7, -3],
+                [0, 7, -3],
+                [0, 0, -3]
             ]
             
             distances = []
-            max_distance = 100.0  # Maximum distance to check
+            max_distance = 50.0  # Maximum distance to check
             
             for direction in directions:
                 # Get drone position
@@ -1239,7 +1362,7 @@ class AirSimForestEnv(gym.Env):
         """
         try:
             responses = self.client.simGetImages([
-                airsim.ImageRequest(self.depth_camera, airsim.ImageType.DepthPerspective, True, False)
+                airsim.ImageRequest(self.depth_camera, airsim.ImageType.DepthVis, True, False)
             ])
             
             if responses:
@@ -1313,6 +1436,7 @@ class AirSimForestEnv(gym.Env):
         3. Successful waypoint reaching
         4. Energy efficiency
         5. Obstacle proximity
+        6. Successful obstacle avoidance
         """
         reward = 0.0
         reward_info = {}
@@ -1327,6 +1451,10 @@ class AirSimForestEnv(gym.Env):
             reward += collision_reward
             reward_info['collision'] = collision_reward
             self.collisions += 1
+            
+            # If we were in proximity to an obstacle and collided, we failed to avoid it
+            if self.in_obstacle_proximity:
+                self.in_obstacle_proximity = False
         
         # Calculate distance to current waypoint
         if self.current_waypoint_index < len(self.waypoints):
@@ -1359,11 +1487,27 @@ class AirSimForestEnv(gym.Env):
         reward += energy_penalty
         reward_info['energy'] = energy_penalty
         
-        # Reward/penalty based on obstacle proximity
+        # Handle obstacle proximity and avoidance
         if self.min_distance_to_obstacles < float('inf'):
-            # Encourage keeping safe distance from obstacles, but not too far
-            optimal_distance = 2.0  # Optimal distance to obstacles
-            distance_diff = abs(self.min_distance_to_obstacles - optimal_distance)
+            # Check if we're in obstacle proximity (around the 2.0 threshold)
+            obstacle_distance = self.min_distance_to_obstacles
+            
+            # If we weren't in proximity before but are now, mark as an encounter
+            if not self.in_obstacle_proximity and obstacle_distance <= self.obstacle_proximity_distance:
+                self.in_obstacle_proximity = True
+                self.obstacle_encounters += 1
+            
+            # If we were in proximity but now moved away successfully, reward avoidance
+            elif self.in_obstacle_proximity and obstacle_distance > self.obstacle_proximity_distance:
+                self.in_obstacle_proximity = False
+                self.obstacle_avoidances += 1
+                avoidance_reward = self.obstacle_avoidance_reward
+                reward += avoidance_reward
+                reward_info['obstacle_avoidance'] = avoidance_reward
+            
+            # Basic reward/penalty based on obstacle proximity
+            optimal_distance = self.obstacle_proximity_distance  # Optimal distance to obstacles
+            distance_diff = abs(obstacle_distance - optimal_distance)
             
             # Higher reward for staying near the optimal distance
             obstacle_reward = (1.0 / (1.0 + distance_diff)) * self.obstacle_distance_factor
@@ -1400,28 +1544,219 @@ class AirSimForestEnv(gym.Env):
 
     def _plan_path(self):
         """
-        Plan a path to the current waypoint using a simple algorithm.
-        This could be enhanced with more sophisticated path planning algorithms.
+        Plan a path to the current waypoint using Rapidly-exploring Random Trees (RRT).
+        RRT is an efficient algorithm for finding paths in cluttered environments.
         """
-        # Get current position
-        current_position = self._get_position()
+        import random
         
-        # Get current waypoint
-        if self.current_waypoint_index < len(self.waypoints):
-            target_waypoint = np.array(self.waypoints[self.current_waypoint_index])
-            
-            # For now, just plan a straight-line path with intermediate points
-            num_points = 10
-            planned_path = []
-            
-            for i in range(num_points + 1):
-                t = i / num_points
-                point = current_position * (1 - t) + target_waypoint * t
-                planned_path.append(point)
-            
-            self.planned_path = planned_path
-        else:
+        # Get current position and target waypoint
+        start_position = self._get_position()
+        
+        if self.current_waypoint_index >= len(self.waypoints):
             self.planned_path = []
+            return
+            
+        target_waypoint = np.array(self.waypoints[self.current_waypoint_index])
+        
+        # RRT parameters
+        max_iterations = 1000  # Maximum number of iterations
+        step_size = 2.0  # Distance between nodes
+        goal_sample_rate = 0.2  # Probability of sampling the goal directly
+        obstacle_threshold = 3.0  # Minimum distance to obstacles
+        
+        # Initialize RRT with start node
+        class Node:
+            def __init__(self, position):
+                self.position = position
+                self.parent = None
+        
+        # Initialize tree with the start node
+        start_node = Node(start_position)
+        tree = [start_node]
+        
+        # Define search space boundaries based on start and goal
+        space_boundaries = []
+        for i in range(3):  # x, y, z dimensions
+            min_val = min(start_position[i], target_waypoint[i]) - 20
+            max_val = max(start_position[i], target_waypoint[i]) + 20
+            space_boundaries.append((min_val, max_val))
+        
+        # Check if a position is collision-free
+        def is_collision_free(position):
+            # Check using simulated sensors
+            try:
+                # Use ray casting to check for collisions
+                collision_info = self.client.simCastRay(
+                    airsim.Vector3r(start_position[0], start_position[1], start_position[2]),
+                    airsim.Vector3r(position[0], position[1], position[2])
+                )
+                
+                if collision_info.has_collided:
+                    return False
+                    
+                # Additional check using LiDAR data if available
+                if self.use_lidar:
+                    # Get drone's current position from which to check
+                    current_drone_pos = self.client.simGetVehiclePose().position
+                    current_position = np.array([current_drone_pos.x_val, current_drone_pos.y_val, current_drone_pos.z_val])
+                    
+                    # Get LiDAR data
+                    lidar_data = self.client.getLidarData()
+                    
+                    if lidar_data and len(lidar_data.point_cloud) > 0:
+                        # Convert point cloud to numpy array
+                        points = np.array(lidar_data.point_cloud).reshape(-1, 3)
+                        
+                        # Calculate vector from drone to proposed position
+                        direction = position - current_position
+                        direction_norm = np.linalg.norm(direction)
+                        
+                        if direction_norm > 0:
+                            unit_direction = direction / direction_norm
+                            
+                            # Find points that lie along this direction
+                            dot_products = np.dot(points, unit_direction)
+                            point_distances = np.linalg.norm(points, axis=1)
+                            
+                            # Check if any points are in the way and closer than the proposed position
+                            for i in range(len(points)):
+                                if 0 < dot_products[i] < direction_norm and point_distances[i] < obstacle_threshold:
+                                    return False
+                
+                # If no collision detected, position is valid
+                return True
+                
+            except Exception as e:
+                print(f"Error in collision check: {e}")
+                # Be conservative and assume collision if there's an error
+                return False
+        
+        # RRT algorithm
+        goal_reached = False
+        closest_node = None
+        closest_distance = float('inf')
+        
+        for _ in range(max_iterations):
+            # Sample a random point or target with probability goal_sample_rate
+            if random.random() < goal_sample_rate:
+                random_point = target_waypoint
+            else:
+                # Sample within the search space
+                random_point = np.array([
+                    random.uniform(space_boundaries[0][0], space_boundaries[0][1]),
+                    random.uniform(space_boundaries[1][0], space_boundaries[1][1]),
+                    random.uniform(space_boundaries[2][0], space_boundaries[2][1])
+                ])
+            
+            # Find nearest node in the tree
+            nearest_node = None
+            min_distance = float('inf')
+            
+            for node in tree:
+                dist = np.linalg.norm(node.position - random_point)
+                if dist < min_distance:
+                    min_distance = dist
+                    nearest_node = node
+            
+            # Calculate new node position (steer)
+            direction = random_point - nearest_node.position
+            direction_norm = np.linalg.norm(direction)
+            
+            if direction_norm > 0:
+                # Normalize and scale by step size
+                new_position = nearest_node.position + (direction / direction_norm) * min(step_size, direction_norm)
+                
+                # Check if the new position is collision-free
+                if is_collision_free(new_position):
+                    # Create and add new node to the tree
+                    new_node = Node(new_position)
+                    new_node.parent = nearest_node
+                    tree.append(new_node)
+                    
+                    # Check if the goal is reached
+                    distance_to_goal = np.linalg.norm(new_position - target_waypoint)
+                    
+                    # Update closest node to goal
+                    if distance_to_goal < closest_distance:
+                        closest_distance = distance_to_goal
+                        closest_node = new_node
+                        
+                    # Check if close enough to the goal
+                    if distance_to_goal < self.target_reached_threshold:
+                        goal_reached = True
+                        closest_node = new_node  # Use this node for path construction
+                        break
+        
+        # Construct the path by traversing from the closest node to the start node
+        path = []
+        
+        if closest_node:
+            current_node = closest_node
+            
+            # Add the goal if it wasn't reached exactly
+            if not goal_reached:
+                path.append(target_waypoint)
+                
+            # Traverse the tree backwards
+            while current_node:
+                path.append(current_node.position)
+                current_node = current_node.parent
+                
+            # Reverse the path to get start-to-goal order
+            path.reverse()
+            
+            # Smooth the path (optional)
+            smoothed_path = self._smooth_path(path)
+            self.planned_path = smoothed_path
+        else:
+            # Fallback to direct path if RRT fails
+            print("RRT path planning failed, using direct path")
+            self.planned_path = [start_position, target_waypoint]
+
+    def _smooth_path(self, path):
+        """
+        Smooth the path to make it more natural and efficient using path pruning.
+        """
+        if len(path) <= 2:
+            return path
+        
+        smoothed_path = [path[0]]  # Start with the first point
+        i = 0
+        
+        while i < len(path) - 1:
+            current = path[i]
+            
+            # Try to connect to the furthest collision-free point
+            furthest_valid_idx = i + 1
+            
+            for j in range(len(path) - 1, i, -1):
+                # Check if direct path is collision-free
+                is_valid = True
+                test_point = path[j]
+                
+                # Simulate ray casting to check collision
+                try:
+                    collision_info = self.client.simCastRay(
+                        airsim.Vector3r(current[0], current[1], current[2]),
+                        airsim.Vector3r(test_point[0], test_point[1], test_point[2])
+                    )
+                    
+                    if collision_info.has_collided:
+                        is_valid = False
+                    
+                    if is_valid:
+                        furthest_valid_idx = j
+                        break
+                except Exception as e:
+                    print(f"Error in path smoothing: {e}")
+                    # Be conservative
+                    is_valid = False
+            
+            # Add the furthest valid point to the smoothed path
+            smoothed_path.append(path[furthest_valid_idx])
+            i = furthest_valid_idx
+        
+        return smoothed_path
 
     def render(self, mode='human'):
         """
@@ -1451,6 +1786,31 @@ class AirSimForestEnv(gym.Env):
                 return np.zeros((84, 84, 3), dtype=np.uint8)
         
         return None
+    
+    def calculate_success_metrics(self):
+        """
+        Calculate success metrics based on waypoints reached and obstacles avoided.
+        
+        Returns:
+            dict: A dictionary containing success metrics.
+        """
+        total_waypoints = len(self.waypoints)
+        waypoint_success_rate = (self.waypoints_reached / total_waypoints) * 100 if total_waypoints > 0 else 0
+        
+        obstacle_success_rate = (self.obstacle_avoidances / self.obstacle_encounters) * 100 if self.obstacle_encounters > 0 else 100
+        
+        # Overall success rate is the average of waypoint and obstacle success rates
+        overall_success_rate = (waypoint_success_rate + obstacle_success_rate) / 2
+        
+        return {
+            'waypoint_success_rate': waypoint_success_rate,
+            'obstacle_success_rate': obstacle_success_rate,
+            'overall_success_rate': overall_success_rate,
+            'waypoints_reached': self.waypoints_reached,
+            'total_waypoints': total_waypoints,
+            'obstacles_encountered': self.obstacle_encounters,
+            'obstacles_avoided': self.obstacle_avoidances
+        }
 
     def close(self):
         """
@@ -1464,7 +1824,7 @@ class AirSimForestEnv(gym.Env):
 
                 
 if __name__ == '__main__':
-    # Example usage to test the environment (without PPO for now)
+
     env = AirSimForestEnv()
     obs, info = env.reset()
     print("Initial observation shape:", obs.shape)
@@ -1473,3 +1833,65 @@ if __name__ == '__main__':
     print("Step - observation shape:", obs.shape, "reward:", reward, "terminated:", terminated)
     env.close()
 
+
+
+# def _get_rgb_observation(self):
+    #     """
+    #     Get RGB camera image and process it for the neural network.
+    #     """
+    #     try:
+    #         # Request RGB image from front_center camera explicitly
+    #         responses = self.client.simGetImages([
+    #             airsim.ImageRequest(self.front_camera, airsim.ImageType.Scene, False, False)
+    #         ])
+            
+    #         # Check if we received a valid response
+    #         if not responses or len(responses) == 0:
+    #             print("Warning: No image responses received from AirSim")
+    #             return np.zeros((84, 84, 3), dtype=np.uint8)
+            
+    #         response = responses[0]
+            
+    #         # Check if the response contains valid image data
+    #         if not response.image_data_uint8 or len(response.image_data_uint8) == 0:
+    #             print("Warning: Empty image data in response")
+    #             return np.zeros((84, 84, 3), dtype=np.uint8)
+            
+    #         # Convert to numpy array
+    #         img_1d = np.fromstring(response.image_data_uint8, dtype=np.uint8)
+            
+    #         # Verify that the image data is not empty
+    #         if len(img_1d) == 0:
+    #             print("Warning: Empty image array after conversion")
+    #             return np.zeros((84, 84, 3), dtype=np.uint8)
+            
+    #         # Check expected size based on response metadata
+    #         expected_size = response.width * response.height * 3
+    #         if len(img_1d) != expected_size:
+    #             print(f"Warning: Image data size mismatch. Expected {expected_size}, got {len(img_1d)}")
+    #             # Try to reconstruct based on what we have
+    #             if len(img_1d) > 0:
+    #                 # Reshape to whatever dimensions we can
+    #                 img_rgb = img_1d[:-(len(img_1d) % 3)].reshape(-1, 3)
+    #                 if img_rgb.shape[0] > 0:
+    #                     # Create a square image from available data
+    #                     side_length = int(np.sqrt(img_rgb.shape[0]))
+    #                     img_rgb = img_rgb[:side_length*side_length].reshape(side_length, side_length, 3)
+    #                     return cv2.resize(img_rgb, (84, 84))
+    #             return np.zeros((84, 84, 3), dtype=np.uint8)
+            
+    #         # Reshape to 3D array
+    #         img_rgb = img_1d.reshape(response.height, response.width, 3)
+            
+    #         # Resize for the CNN with explicit dimension checks
+    #         if img_rgb.shape[0] > 0 and img_rgb.shape[1] > 0:
+    #             img_rgb_resized = cv2.resize(img_rgb, (84, 84))
+    #             return img_rgb_resized
+    #         else:
+    #             print(f"Warning: Invalid image dimensions: {img_rgb.shape}")
+    #             return np.zeros((84, 84, 3), dtype=np.uint8)
+            
+    #     except Exception as e:
+    #         print(f"Error in _get_rgb_observation: {str(e)}")
+    #         # Return a black image as fallback
+    #         return np.zeros((84, 84, 3), dtype=np.uint8)
